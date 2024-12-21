@@ -8,6 +8,13 @@ const ExitCode = enum(u8) {
     cont = 100,
 };
 
+const supportedCommands = [_][]const u8{
+    "hello",
+    "exit",
+    "echo",
+    "type",
+};
+
 var arena: std.heap.ArenaAllocator = undefined;
 var allocator: std.mem.Allocator = undefined;
 
@@ -31,6 +38,15 @@ fn processCommand(input: []const u8) !ExitCode {
     } else if (std.mem.eql(u8, cmd, "echo")) {
         const echo_string = try std.mem.join(allocator, " ", args.items);
         try stdout.print("{s}\n", .{echo_string});
+        return .cont;
+    } else if (std.mem.eql(u8, cmd, "type")) {
+        const typeCmd = try args.items.first();
+        for (supportedCommands) |supportedCommand| {
+            if (std.mem.eql(u8, supportedCommand, typeCmd)) {
+                try stdout.print("{s} is a shell builtin\n", .{typeCmd});
+                return .cont;
+            }
+        }
         return .cont;
     } else {
         try stdout.print("{s}: command not found\n", .{cmd});
