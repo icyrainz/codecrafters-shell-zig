@@ -40,13 +40,20 @@ fn processCommand(input: []const u8) !ExitCode {
         try stdout.print("{s}\n", .{echo_string});
         return .cont;
     } else if (std.mem.eql(u8, cmd, "type")) {
-        const typeCmd = try args.items.first();
+        if (args.items.len == 0) {
+            try stdout.print("Must provide a command to check type\n", .{});
+            return .cont;
+        }
+
+        const typeCmd = args.items[0];
         for (supportedCommands) |supportedCommand| {
             if (std.mem.eql(u8, supportedCommand, typeCmd)) {
                 try stdout.print("{s} is a shell builtin\n", .{typeCmd});
                 return .cont;
             }
         }
+
+        try stdout.print("{s}: not found\n", .{typeCmd});
         return .cont;
     } else {
         try stdout.print("{s}: command not found\n", .{cmd});
