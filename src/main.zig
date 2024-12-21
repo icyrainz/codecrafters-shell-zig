@@ -15,6 +15,9 @@ const supportedCommands = [_][]const u8{
     "type",
 };
 
+const stdin = std.io.getStdIn().reader();
+const stdout = std.io.getStdOut().writer();
+
 var arena: std.heap.ArenaAllocator = undefined;
 var allocator: std.mem.Allocator = undefined;
 
@@ -29,45 +32,57 @@ fn processCommand(input: []const u8) !ExitCode {
         try args.append(arg);
     }
 
-    const stdout = std.io.getStdOut().writer();
     if (std.mem.eql(u8, cmd, "hello")) {
-        try stdout.writeAll("Hello, world!\n");
-        return .cont;
+        return runHello();
     } else if (std.mem.eql(u8, cmd, "exit")) {
-        return .success;
+        return runExit();
     } else if (std.mem.eql(u8, cmd, "echo")) {
-        const echo_string = try std.mem.join(allocator, " ", args.items);
-        try stdout.print("{s}\n", .{echo_string});
-        return .cont;
+        return runEcho(args.items);
     } else if (std.mem.eql(u8, cmd, "type")) {
-        if (args.items.len == 0) {
-            try stdout.print("Must provide a command to check type\n", .{});
-            return .cont;
-        }
-
-        const typeCmd = args.items[0];
-        for (supportedCommands) |supportedCommand| {
-            if (std.mem.eql(u8, supportedCommand, typeCmd)) {
-                try stdout.print("{s} is a shell builtin\n", .{typeCmd});
-                return .cont;
-            }
-        }
-
-        try stdout.print("{s}: not found\n", .{typeCmd});
-        return .cont;
+        return runType(args.items);
     } else {
         try stdout.print("{s}: command not found\n", .{cmd});
         return .cont;
     }
 }
 
+fn runHello() !ExitCode {
+    try stdout.writeAll("Hello, world!\n");
+    return .cont;
+}
+
+fn runExit() !ExitCode {
+    return .success;
+}
+
+fn runEcho(args: []const []const u8) !ExitCode {
+    const echo_string = try std.mem.join(allocator, " ", args);
+    try stdout.print("{s}\n", .{echo_string});
+    return .cont;
+}
+
+fn runType(args: []const []const u8) !ExitCode {
+    if (args.len == 0) {
+        try stdout.print("Must provide a command to check type\n", .{});
+        return .cont;
+    }
+
+    const typeCmd = args[0];
+    for (supportedCommands) |supportedCommand| {
+        if (std.mem.eql(u8, supportedCommand, typeCmd)) {
+            try stdout.print("{s} is a shell builtin\n", .{typeCmd});
+            return .cont;
+        }
+    }
+
+    try stdout.print("{s}: not found\n", .{typeCmd});
+    return .cont;
+}
+
 pub fn main() !void {
     arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     allocator = arena.allocator();
-
-    const stdout = std.io.getStdOut().writer();
-    const stdin = std.io.getStdIn().reader();
 
     var buffer: [1024]u8 = undefined;
 
