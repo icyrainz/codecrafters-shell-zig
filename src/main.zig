@@ -10,12 +10,14 @@ fn processCommand(input: []const u8) !void {
 }
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("$ ", .{});
+    while (true) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.print("$ ", .{});
 
-    const stdin = std.io.getStdIn().reader();
-    var buffer: [1024]u8 = undefined;
-    const user_input = try stdin.readUntilDelimiter(&buffer, '\n');
+        const stdin = std.io.getStdIn().reader();
+        var buffer: [1024]u8 = undefined;
+        const user_input = try stdin.readUntilDelimiter(&buffer, '\n');
 
-    try processCommand(user_input);
+        try processCommand(user_input);
+    }
 }
