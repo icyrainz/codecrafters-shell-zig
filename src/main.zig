@@ -1,108 +1,148 @@
 const std = @import("std");
+const Term = std.process.Child.Term;
 
 const enable_debug = true;
 const debug_print = if (enable_debug) std.debug.print else void_print;
-
 fn void_print(comptime _: []const u8, _: anytype) void {}
-
-const EXIT_0: u8 = 0;
-const CONTINUE: u8 = 100;
-
-const ExitCode = enum(u8) {
-    success = 0,
-    cont = 100,
-};
-
-const supportedCommands = [_][]const u8{
-    "hello",
-    "exit",
-    "echo",
-    "type",
-    "pwd",
-};
 
 const stdin = std.io.getStdIn().reader();
 const stdout = std.io.getStdOut().writer();
 
 var arenaAllocator: std.mem.Allocator = undefined;
 
-fn processCommand(input: []const u8) !ExitCode {
-    var commandItems = std.mem.tokenizeAny(u8, input, " ");
+const Command = struct {
+    name: []const u8,
+    execute: *const fn ([]const []const u8, std.mem.Allocator) anyerror!void,
+};
 
-    var cmd_and_args = std.ArrayList([]const u8).init(arenaAllocator);
-    defer cmd_and_args.deinit();
+const Shell = struct {
+    allocator: std.mem.Allocator,
+    commands: std.StringHashMap(*const Command),
 
-    while (commandItems.next()) |arg| {
-        try cmd_and_args.append(arg);
-    }
-    const cmd = cmd_and_args.items[0];
-    const args = cmd_and_args.items[1..];
+    const Self = @This();
 
-    if (std.mem.eql(u8, cmd, "hello")) {
-        return runHello();
-    } else if (std.mem.eql(u8, cmd, "exit")) {
-        return runExit();
-    } else if (std.mem.eql(u8, cmd, "echo")) {
-        return runEcho(args);
-    } else if (std.mem.eql(u8, cmd, "type")) {
-        return runTypeBultin(args);
-    } else if (std.mem.eql(u8, cmd, "pwd")) {
-        return runPwd();
-    } else {
-        return runProgram(cmd_and_args.items);
-    }
-}
-
-fn runHello() !ExitCode {
-    try stdout.writeAll("Hello, world!\n");
-    return .cont;
-}
-
-fn runExit() !ExitCode {
-    return .success;
-}
-
-fn runEcho(args: []const []const u8) !ExitCode {
-    const echo_string = try std.mem.join(arenaAllocator, " ", args);
-    try stdout.print("{s}\n", .{echo_string});
-    return .cont;
-}
-
-fn runPwd() !ExitCode {
-    const cwd = try std.process.getCwdAlloc(arenaAllocator);
-    try stdout.print("{s}\n", .{cwd});
-
-    return .cont;
-}
-
-fn runTypeBultin(args: []const []const u8) !ExitCode {
-    if (args.len == 0) {
-        try stdout.print("Must provide a command to check type\n", .{});
-        return .cont;
+    fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .commands = std.StringHashMap(*const Command).init(allocator),
+        };
     }
 
-    const typeCmd = args[0];
-    for (supportedCommands) |supportedCommand| {
-        if (std.mem.eql(u8, supportedCommand, typeCmd)) {
-            try stdout.print("{s} is a shell builtin\n", .{typeCmd});
-            return .cont;
+    fn deinit(self: *Self) void {
+        self.commands.deinit();
+    }
+
+    fn registerCommand(self: *Self, command: *const Command) !void {
+        try self.commands.put(command.name, command);
+    }
+
+    fn processCommand(self: *Self, input: []const u8) !void {
+        var cmd_iter = std.mem.tokenizeAny(u8, input, " ");
+        const cmd_name = cmd_iter.next() orelse return;
+
+        var args = std.ArrayList([]const u8).init(self.allocator);
+        defer args.deinit();
+
+        while (cmd_iter.next()) |arg| {
+            try args.append(arg);
         }
+
+        if (self.commands.get(cmd_name)) |command| {
+            try command.execute(args.items, self.allocator);
+            return;
+        }
+
+        try self.runExternalCommand(cmd_name, args.items);
     }
 
-    return runTypeFromPath(args);
-}
+    fn runExternalCommand(self: *Self, cmd: []const u8, args: []const []const u8) !void {
+        const full_path = try findFullPath(cmd) orelse {
+            try stdout.print("{s}: command not found\n", .{cmd});
+            return;
+        };
 
-fn runTypeFromPath(args: []const []const u8) !ExitCode {
-    const cmd = args[0];
+        const exe_path = try std.fmt.allocPrint(arenaAllocator, "{s}/{s}", .{ full_path, cmd });
 
-    if (try findFullPath(cmd)) |base_path| {
-        try stdout.print("{s} is {s}/{s}\n", .{ cmd, base_path, cmd });
-    } else {
-        try stdout.print("{s}: not found\n", .{cmd});
+        var process_args = std.ArrayList([]const u8).init(self.allocator);
+        defer process_args.deinit();
+        try process_args.append(exe_path);
+        try process_args.appendSlice(args);
+
+        var child = std.process.Child.init(process_args.items, self.allocator);
+        _ = try child.spawnAndWait();
     }
+};
 
-    return .cont;
-}
+const PwdCommand = Command{
+    .name = "pwd",
+    .execute = struct {
+        fn execute(_: []const []const u8, allocator: std.mem.Allocator) anyerror!void {
+            const cwd = try std.process.getCwdAlloc(allocator);
+            try stdout.print("{s}\n", .{cwd});
+        }
+    }.execute,
+};
+
+const ExitCommand = Command{
+    .name = "exit",
+    .execute = struct {
+        fn execute(_: []const []const u8, _: std.mem.Allocator) anyerror!void {
+            std.process.exit(0);
+        }
+    }.execute,
+};
+
+const EchoCommand = Command{
+    .name = "echo",
+    .execute = struct {
+        fn execute(args: []const []const u8, _: std.mem.Allocator) anyerror!void {
+            const echo_string = try std.mem.join(arenaAllocator, " ", args);
+            try stdout.print("{s}\n", .{echo_string});
+        }
+    }.execute,
+};
+
+const TypeCommand = Command{
+    .name = "type",
+    .execute = struct {
+        fn execute(args: []const []const u8, _: std.mem.Allocator) anyerror!void {
+            if (args.len == 0) {
+                try stdout.print("type: missing argument\n", .{});
+                return;
+            }
+
+            const cmd = args[0];
+            for (BuiltInCommands) |command| {
+                if (std.mem.eql(u8, command.name, cmd)) {
+                    try stdout.print("{s} is a shell builtin\n", .{cmd});
+                    return;
+                }
+            }
+
+            if (try findFullPath(cmd)) |base_path| {
+                try stdout.print("{s} is {s}/{s}\n", .{ cmd, base_path, cmd });
+            } else {
+                try stdout.print("{s}: not found\n", .{cmd});
+            }
+        }
+    }.execute,
+};
+
+const CdCommand = Command{ .name = "cd", .execute = struct {
+    fn execute(args: []const []const u8, _: std.mem.Allocator) anyerror!void {
+        if (args.len == 0) {
+            try std.process.changeCurDir("/");
+            return;
+        }
+        if (args.len > 1) {
+            try stdout.print("cd: too many arguments\n", .{});
+            return;
+        }
+        std.process.changeCurDir(args[0]) catch {
+            try stdout.print("cd: {s}: No such file or directory\n", .{args[0]});
+        };
+    }
+}.execute };
 
 fn findFullPath(cmd: []const u8) !?[]const u8 {
     var envs = try std.process.getEnvMap(arenaAllocator);
@@ -143,26 +183,25 @@ fn findFullPath(cmd: []const u8) !?[]const u8 {
     return null;
 }
 
-fn runProgram(args: [][]const u8) !ExitCode {
-    const cmd = args[0];
-    const full_path = try findFullPath(cmd) orelse {
-        try stdout.print("{s}: command not found\n", .{cmd});
-        return .cont;
-    };
-    const exe_full_path = try std.fmt.allocPrint(arenaAllocator, "{s}/{s}", .{ full_path, cmd });
-
-    args[0] = exe_full_path;
-
-    var child_process = std.process.Child.init(args, arenaAllocator);
-
-    _ = try child_process.spawnAndWait();
-    return .cont;
-}
+const BuiltInCommands = [_]*const Command{
+    &ExitCommand,
+    &EchoCommand,
+    &TypeCommand,
+    &PwdCommand,
+    &CdCommand,
+};
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     arenaAllocator = arena.allocator();
+
+    var shell = Shell.init(arenaAllocator);
+    defer shell.deinit();
+
+    for (BuiltInCommands) |command| {
+        try shell.registerCommand(command);
+    }
 
     var buffer: [1024]u8 = undefined;
 
@@ -170,11 +209,6 @@ pub fn main() !void {
         try stdout.print("$ ", .{});
 
         const user_input = try stdin.readUntilDelimiter(&buffer, '\n');
-
-        const exit_code = try processCommand(user_input);
-        switch (exit_code) {
-            .success => return,
-            else => {},
-        }
+        try shell.processCommand(user_input);
     }
 }
