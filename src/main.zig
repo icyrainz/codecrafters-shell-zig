@@ -18,6 +18,7 @@ const supportedCommands = [_][]const u8{
     "exit",
     "echo",
     "type",
+    "pwd",
 };
 
 const stdin = std.io.getStdIn().reader();
@@ -45,6 +46,8 @@ fn processCommand(input: []const u8) !ExitCode {
         return runEcho(args);
     } else if (std.mem.eql(u8, cmd, "type")) {
         return runTypeBultin(args);
+    } else if (std.mem.eql(u8, cmd, "pwd")) {
+        return runPwd();
     } else {
         return runProgram(cmd_and_args.items);
     }
@@ -62,6 +65,13 @@ fn runExit() !ExitCode {
 fn runEcho(args: []const []const u8) !ExitCode {
     const echo_string = try std.mem.join(arenaAllocator, " ", args);
     try stdout.print("{s}\n", .{echo_string});
+    return .cont;
+}
+
+fn runPwd() !ExitCode {
+    const cwd = try std.process.getCwdAlloc(arenaAllocator);
+    try stdout.print("{s}\n", .{cwd});
+
     return .cont;
 }
 
