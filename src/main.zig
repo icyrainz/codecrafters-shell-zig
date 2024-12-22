@@ -27,26 +27,26 @@ var arenaAllocator: std.mem.Allocator = undefined;
 
 fn processCommand(input: []const u8) !ExitCode {
     var commandItems = std.mem.tokenizeAny(u8, input, " ");
-    const cmd = commandItems.next() orelse return .cont;
 
-    var args = std.ArrayList([]const u8).init(arenaAllocator);
-    defer args.deinit();
+    var cmd_and_args = std.ArrayList([]const u8).init(arenaAllocator);
+    defer cmd_and_args.deinit();
 
     while (commandItems.next()) |arg| {
-        try args.append(arg);
+        try cmd_and_args.append(arg);
     }
+    const cmd = cmd_and_args.items[0];
+    const args = cmd_and_args.items[1..];
 
     if (std.mem.eql(u8, cmd, "hello")) {
         return runHello();
     } else if (std.mem.eql(u8, cmd, "exit")) {
         return runExit();
     } else if (std.mem.eql(u8, cmd, "echo")) {
-        return runEcho(args.items);
+        return runEcho(args);
     } else if (std.mem.eql(u8, cmd, "type")) {
-        return runTypeBultin(args.items);
+        return runTypeBultin(args);
     } else {
-        try stdout.print("{s}: command not found\n", .{cmd});
-        return .cont;
+        return runProgram(cmd_and_args.items);
     }
 }
 
@@ -83,14 +83,18 @@ fn runTypeBultin(args: []const []const u8) !ExitCode {
 }
 
 fn runTypeFromPath(args: []const []const u8) !ExitCode {
-    if (args.len == 0) {
-        try stdout.print("Must provide a command to check type\n", .{});
-        return .cont;
+    const cmd = args[0];
+
+    if (try findFullPath(cmd)) |base_path| {
+        try stdout.print("{s} is {s}/{s}\n", .{ cmd, base_path, cmd });
+    } else {
+        try stdout.print("{s}: not found\n", .{cmd});
     }
 
-    const typeCmd = args[0];
-    // debug_print("Checking: {s}\n", .{typeCmd});
+    return .cont;
+}
 
+fn findFullPath(cmd: []const u8) !?[]const u8 {
     var envs = try std.process.getEnvMap(arenaAllocator);
     defer envs.deinit();
 
@@ -108,6 +112,9 @@ fn runTypeFromPath(args: []const []const u8) !ExitCode {
             path_value;
         // debug_print("After expanding path: {s}\n", .{real_path});
 
+        // NOTE: the accessAbsolute and openDirAboslute functions have an assert
+        // to check if path is absolute but do not return a union error type.
+        // So we need to check up-front.
         if (!std.fs.path.isAbsolute(real_path)) continue;
         std.fs.accessAbsolute(real_path, .{}) catch continue;
 
@@ -116,15 +123,29 @@ fn runTypeFromPath(args: []const []const u8) !ExitCode {
             defer walker.deinit();
 
             while (walker.next() catch continue) |item| {
-                if (std.mem.eql(u8, item.basename, typeCmd)) {
-                    try stdout.print("{s} is {s}/{s}\n", .{ typeCmd, real_path, typeCmd });
-                    return .cont;
+                if (std.mem.eql(u8, item.basename, cmd)) {
+                    // debug_print("found {s} in {s}\n", .{ cmd, real_path });
+                    return try arenaAllocator.dupe(u8, real_path);
                 }
             }
         } else |_| continue;
     }
+    return null;
+}
 
-    try stdout.print("{s}: not found\n", .{typeCmd});
+fn runProgram(args: [][]const u8) !ExitCode {
+    const cmd = args[0];
+    const full_path = try findFullPath(cmd) orelse {
+        try stdout.print("{s}: command not found\n", .{cmd});
+        return .cont;
+    };
+    const exe_full_path = try std.fmt.allocPrint(arenaAllocator, "{s}/{s}", .{ full_path, cmd });
+
+    args[0] = exe_full_path;
+
+    var child_process = std.process.Child.init(args, arenaAllocator);
+
+    _ = try child_process.spawnAndWait();
     return .cont;
 }
 
